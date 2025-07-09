@@ -3,6 +3,7 @@
 //! The Block Engine is responsible for the following:
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
+
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -35,6 +36,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
+    thiserror::Error,
     tokio::{
         task,
         time::{interval, sleep, timeout},
@@ -79,12 +81,29 @@ pub struct BlockEngineConfig {
     /// Block Engine URL
     pub block_engine_url: String,
 
+    /// Disables block engine auto-configuration, meaning pinging for the closest region. Values provided to `--block-engine-url` and `--shred-receiver-address` will be used as-is.
+    pub disable_block_engine_autoconfig: bool,
+
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
 }
 
 pub struct BlockEngineStage {
     t_hdls: Vec<JoinHandle<()>>,
+}
+#[derive(Error, Debug)]
+enum PingError<'a> {
+    #[error("Failed to run ping: {0}")]
+    CommandFailure(#[from] std::io::Error),
+
+    #[error("ping command exited with non-zero status for host: {0}")]
+    NonZeroExit(&'a str),
+
+    #[error("No valid RTT found in ping output")]
+    NoRttFound,
+
+    #[error("Failed to parse RTT: {0}")]
+    ParseFloatError(#[from] std::num::ParseFloatError),
 }
 
 impl BlockEngineStage {
@@ -151,15 +170,14 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            let local_block_engine_config = {
-                let block_engine_config = block_engine_config.clone();
-                task::spawn_blocking(move || block_engine_config.lock().unwrap().clone())
-                    .await
-                    .unwrap()
-            };
+            let local_block_engine_config =
+                task::block_in_place(|| block_engine_config.lock().unwrap().clone());
             if !Self::is_valid_block_engine_config(&local_block_engine_config) {
                 sleep(CONNECTION_BACKOFF).await;
-            } else if let Err(e) = Self::connect_auth_and_stream(
+                continue;
+            }
+
+            if let Err(e) = Self::connect_auth_and_stream(
                 &local_block_engine_config,
                 &block_engine_config,
                 &cluster_info,
@@ -285,6 +303,39 @@ impl BlockEngineStage {
             cluster_info,
         )
         .await
+    }
+
+    /// Runs a single `ping -c 1 <ip>` command and returns the RTT in microseconds, or an error.
+    async fn ping(host: &str) -> Result<u64, PingError> {
+        let output = tokio::process::Command::new("ping")
+            .arg("-c")
+            .arg("1") // ping once
+            .arg("-w")
+            .arg("2") // don't wait more than 2 secs for a response
+            .arg(host)
+            .output()
+            .await?; // can produce std::io::Error -> PingError::CommandFailure
+
+        if !output.status.success() {
+            return Err(PingError::NonZeroExit(host));
+        }
+
+        // Example line to parse: `64 bytes from 8.8.8.8: icmp_seq=1 ttl=57 time=12.3 ms`
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let Some(rtt_str) = line
+                .find("time=")
+                .map(|index| &line[index + "time=".len()..])
+                .and_then(|rtt_str| rtt_str.find(" ms").map(|index| &rtt_str[..index]))
+            else {
+                continue;
+            };
+
+            let rtt = rtt_str.parse::<f64>()?; // might return ParseFloatError
+            return Ok((rtt * 1000.0).round() as u64);
+        }
+
+        Err(PingError::NoRttFound)
     }
 
     #[allow(clippy::too_many_arguments)]

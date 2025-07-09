@@ -254,6 +254,7 @@ pub trait AdminRpc {
         &self,
         meta: Self::Metadata,
         block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
         trust_packets: bool,
     ) -> Result<()>;
 
@@ -483,11 +484,13 @@ impl AdminRpc for AdminRpcImpl {
         &self,
         meta: Self::Metadata,
         block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
         trust_packets: bool,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
         let config = BlockEngineConfig {
             block_engine_url,
+            disable_block_engine_autoconfig,
             trust_packets,
         };
         // Detailed log messages are printed inside validate function
