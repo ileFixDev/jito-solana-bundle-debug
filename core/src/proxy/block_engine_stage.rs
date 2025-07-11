@@ -291,8 +291,8 @@ impl BlockEngineStage {
                 }
 
                 debug!(
-                "no reachable block‑engine endpoint yet; retrying in {CONNECTION_BACKOFF_S}s..."
-            );
+                    "No reachable Block Engine found yet; retrying in {CONNECTION_BACKOFF_S}s..."
+                );
                 sleep(Duration::from_secs(CONNECTION_BACKOFF_S)).await;
             };
 
