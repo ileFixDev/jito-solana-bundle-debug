@@ -18,7 +18,7 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
             Arg::with_name("disable_block_engine_autoconfig")
                 .long("disable-block-engine-autoconfig")
                 .takes_value(false)
-                .help("Disables block engine auto-configuration. Values provided to `--block-engine-url` and `--shred-receiver-address` will be used as-is."),
+                .help("Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
         )
         .arg(
             Arg::with_name("trust_block_engine_packets")

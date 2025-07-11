@@ -3,7 +3,6 @@
 //! The Block Engine is responsible for the following:
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
-
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -14,20 +13,23 @@ use {
             ProxyError,
         },
     },
+    arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     jito_protos::proto::{
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest,
+            BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
         },
     },
+    rand::seq::IteratorRandom,
     solana_gossip::cluster_info::ClusterInfo,
     solana_perf::packet::PacketBatch,
     solana_sdk::{
         pubkey::Pubkey, saturating_add_assign, signature::Signer, signer::keypair::Keypair,
     },
     std::{
+        net::{SocketAddr, ToSocketAddrs},
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -81,7 +83,7 @@ pub struct BlockEngineConfig {
     /// Block Engine URL
     pub block_engine_url: String,
 
-    /// Disables block engine auto-configuration, meaning pinging for the closest region. Values provided to `--block-engine-url` and `--shred-receiver-address` will be used as-is.
+    /// Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is.
     pub disable_block_engine_autoconfig: bool,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
@@ -93,10 +95,10 @@ pub struct BlockEngineStage {
 }
 #[derive(Error, Debug)]
 enum PingError<'a> {
-    #[error("Failed to run ping: {0}")]
+    #[error("Failed to send ping: {0}")]
     CommandFailure(#[from] std::io::Error),
 
-    #[error("ping command exited with non-zero status for host: {0}")]
+    #[error("Ping command exited with non-zero status for host: {0}")]
     NonZeroExit(&'a str),
 
     #[error("No valid RTT found in ping output")]
@@ -119,6 +121,7 @@ impl BlockEngineStage {
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -137,6 +140,7 @@ impl BlockEngineStage {
                     banking_packet_sender,
                     exit,
                     block_builder_fee_info,
+                    shredstream_receiver_address,
                 ));
             })
             .unwrap();
@@ -162,6 +166,7 @@ impl BlockEngineStage {
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
         const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
@@ -187,6 +192,7 @@ impl BlockEngineStage {
                 &exit,
                 &block_builder_fee_info,
                 &CONNECTION_TIMEOUT,
+                &shredstream_receiver_address,
             )
             .await
             {
@@ -220,36 +226,88 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
+        shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
 
         let mut backend_endpoint =
-            Endpoint::from_shared(local_block_engine_config.block_engine_url.clone())
-                .map_err(|_| {
-                    ProxyError::BlockEngineConnectionError(format!(
-                        "invalid block engine url value: {}",
-                        local_block_engine_config.block_engine_url
-                    ))
-                })?
-                .tcp_keepalive(Some(Duration::from_secs(60)));
-        if local_block_engine_config
-            .block_engine_url
-            .starts_with("https")
-        {
-            backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .map_err(|_| {
-                    ProxyError::BlockEngineConnectionError(
-                        "failed to set tls_config for block engine service".to_string(),
-                    )
-                })?;
+            Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
+
+        if !local_block_engine_config.disable_block_engine_autoconfig {
+            let mut endpoint_discovery =
+                BlockEngineValidatorClient::connect(backend_endpoint.clone())
+                    .await
+                    .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
+            let endpoints = endpoint_discovery
+                .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
+                .await
+                .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?
+                .into_inner();
+
+            let mut rng = rand::thread_rng();
+            let (endpoint, shredstream_socket, latency_us) = loop {
+                let ping_res = futures::future::join_all(
+                    endpoints
+                        .regioned_endpoints
+                        .iter()
+                        .map(|endpoint| Self::ping(&endpoint.block_engine_url)), // todo: send 3 copies of pings, to get best time
+                )
+                .await;
+
+                let mut best_endpoint: Option<(
+                    &BlockEngineEndpoint,
+                    SocketAddr, /* shredstream receiver */
+                    u64,        /* latency us */
+                )> = None;
+                ping_res
+                    .iter()
+                    .zip(endpoints.regioned_endpoints.iter())
+                    .for_each(|(maybe_ping_res, endpoint)| {
+                        let Ok(latency_us) = maybe_ping_res else {
+                            return;
+                        };
+                        let Some(shredstream_socket) = endpoint
+                            .shredstream_receiver_address
+                            .to_socket_addrs()
+                            .ok()
+                            .and_then(|shredstream_sockets| shredstream_sockets.choose(&mut rng))
+                        else {
+                            return;
+                        };
+                        match &mut best_endpoint {
+                            Some((_, _, best_latency_us)) if latency_us >= best_latency_us => {}
+                            _ => best_endpoint = Some((endpoint, shredstream_socket, *latency_us)),
+                        }
+                    });
+                if let Some(result) = best_endpoint {
+                    break result;
+                }
+
+                if exit.load(Ordering::Relaxed) {
+                    return Err(ProxyError::BlockEngineConnectionError(
+                        "exit signal received while discovering block‑engine endpoint".to_owned(),
+                    ));
+                }
+
+                debug!(
+                "no reachable block‑engine endpoint yet; retrying in {CONNECTION_BACKOFF_S}s..."
+            );
+                sleep(Duration::from_secs(CONNECTION_BACKOFF_S)).await;
+            };
+
+            if endpoint.block_engine_url != local_block_engine_config.block_engine_url {
+                debug!(
+                "Selected best Block Engine endpoint: {}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
+                endpoint.block_engine_url,
+                Duration::from_micros(latency_us)
+            );
+                backend_endpoint = Self::get_endpoint(endpoint.block_engine_url.clone())?;
+                shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
+            }
         }
 
-        debug!(
-            "connecting to auth: {}",
-            local_block_engine_config.block_engine_url
-        );
+        debug!("connecting to auth: {}", backend_endpoint.uri());
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -267,14 +325,11 @@ impl BlockEngineStage {
 
         datapoint_info!(
             "block_engine_stage-tokens_generated",
-            ("url", local_block_engine_config.block_engine_url, String),
+            ("url", backend_endpoint.uri().to_string(), String),
             ("count", 1, i64),
         );
 
-        debug!(
-            "connecting to block engine: {}",
-            local_block_engine_config.block_engine_url
-        );
+        debug!("connecting to block engine: {}", backend_endpoint.uri());
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
@@ -303,6 +358,27 @@ impl BlockEngineStage {
             cluster_info,
         )
         .await
+    }
+
+    /// Build an Endpoint from the URL provided
+    fn get_endpoint(block_engine_url: String) -> Result<Endpoint, ProxyError> {
+        let mut backend_endpoint = Endpoint::from_shared(block_engine_url.clone())
+            .map_err(|_| {
+                ProxyError::BlockEngineConnectionError(format!(
+                    "invalid block engine url value: {block_engine_url}",
+                ))
+            })?
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+        if block_engine_url.starts_with("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .map_err(|_| {
+                    ProxyError::BlockEngineConnectionError(
+                        "failed to set tls_config for block engine service".to_owned(),
+                    )
+                })?;
+        }
+        Ok(backend_endpoint)
     }
 
     /// Runs a single `ping -c 1 <ip>` command and returns the RTT in microseconds, or an error.

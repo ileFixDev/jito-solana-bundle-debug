@@ -1766,7 +1766,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .long("disable-block-engine-autoconfig")
                 .value_name("DISABLE_BLOCK_ENGINE_AUTOCONFIG")
                 .takes_value(false)
-                .help("Disables block engine auto-configuration. Values provided to `--block-engine-url` and `--shred-receiver-address` will be used as-is."),
+                .help("Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
         )
         .arg(
             Arg::with_name("shred_retransmit_receiver_address")
