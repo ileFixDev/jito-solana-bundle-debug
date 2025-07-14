@@ -246,12 +246,14 @@ impl BlockEngineStage {
                 .into_inner();
 
             let mut rng = rand::thread_rng();
+            const PING_COUNT: usize = 3;
             let (endpoint, shredstream_socket, latency_us) = loop {
                 let ping_res = futures::future::join_all(
-                    endpoints
-                        .regioned_endpoints
-                        .iter()
-                        .map(|endpoint| Self::ping(&endpoint.block_engine_url)), // todo: send 3 copies of pings, to get best time
+                    endpoints.regioned_endpoints.iter().flat_map(|endpoint| {
+                        // send multiple pings to each destination to get the best time
+                        std::iter::repeat_with(|| Self::ping(&endpoint.block_engine_url))
+                            .take(PING_COUNT)
+                    }),
                 )
                 .await;
 
@@ -262,7 +264,12 @@ impl BlockEngineStage {
                 )> = None;
                 ping_res
                     .iter()
-                    .zip(endpoints.regioned_endpoints.iter())
+                    .zip(
+                        endpoints
+                            .regioned_endpoints
+                            .iter()
+                            .flat_map(|x| std::iter::repeat(x).take(PING_COUNT)),
+                    )
                     .for_each(|(maybe_ping_res, endpoint)| {
                         let Ok(latency_us) = maybe_ping_res else {
                             return;
