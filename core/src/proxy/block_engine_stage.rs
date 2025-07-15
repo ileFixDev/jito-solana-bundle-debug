@@ -4,6 +4,8 @@
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
 
+use itertools::Itertools;
+use std::time::Instant;
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -20,7 +22,7 @@ use {
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
             self, block_engine_validator_client::BlockEngineValidatorClient,
-            BlockBuilderFeeInfoRequest, BlockEngineEndpoint, GetBlockEngineEndpointRequest,
+            BlockBuilderFeeInfoRequest, GetBlockEngineEndpointRequest,
         },
     },
     rand::seq::IteratorRandom,
@@ -227,8 +229,10 @@ impl BlockEngineStage {
         mut error_count: &mut u64,
         local_block_engine_config: &BlockEngineConfig,
     ) -> crate::proxy::Result<()> {
+        let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
             return Self::connect_auth_and_stream_autoconfig(
+                endpoint,
                 &local_block_engine_config,
                 &block_engine_config,
                 &cluster_info,
@@ -243,7 +247,6 @@ impl BlockEngineStage {
             .await;
         }
 
-        let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
         Self::connect_auth_and_stream(
             endpoint,
             &local_block_engine_config,
@@ -260,6 +263,7 @@ impl BlockEngineStage {
     }
 
     async fn connect_auth_and_stream_autoconfig(
+        mut backend_endpoint: Endpoint,
         local_block_engine_config: &BlockEngineConfig,
         global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -271,9 +275,6 @@ impl BlockEngineStage {
         error_count: &mut u64,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> crate::proxy::Result<()> {
-        let mut backend_endpoint =
-            Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
-
         let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
             .await
             .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
@@ -285,13 +286,6 @@ impl BlockEngineStage {
 
         const PING_COUNT: usize = 3;
         let mut rng = rand::thread_rng();
-        let agg_endpoints: ahash::HashMap<
-            &BlockEngineEndpoint,
-            (
-                SocketAddr, /* shredstream receiver */
-                u64,        /* latency us */
-            ),
-        >;
         let ping_res =
             futures::future::join_all(endpoints.regioned_endpoints.iter().flat_map(|endpoint| {
                 // send multiple pings to each destination to get the best time
@@ -312,29 +306,37 @@ impl BlockEngineStage {
                 endpoints
                     .regioned_endpoints
                     .iter()
-                    .flat_map(|x| std::iter::repeat(x).take(PING_COUNT)),
+                    .flat_map(|endpoint| std::iter::repeat(endpoint).take(PING_COUNT)),
             )
             .for_each(|(maybe_ping_res, endpoint)| {
-                let Ok(latency_us) = maybe_ping_res else {
+                let Ok(latency_us) = maybe_ping_res.as_ref().inspect_err(|e| {
+                    warn!("Failed to ping {}, error: {e}", endpoint.block_engine_url)
+                }) else {
                     return;
                 };
                 match agg_endpoints.entry(endpoint.block_engine_url.as_str()) {
                     Entry::Occupied(mut ent) => {
-                        let (ss_socket, best_ping_us) = ent.get_mut();
+                        let (_shredstream_socket, best_ping_us) = ent.get_mut();
                         if latency_us <= best_ping_us {
                             *best_ping_us = *latency_us;
                         }
                     }
-                    Entry::Vacant(ent) => {
+                    Entry::Vacant(entry) => {
                         let Some(shredstream_socket) = endpoint
                             .shredstream_receiver_address
                             .to_socket_addrs()
+                            .inspect_err(|e| {
+                                warn!(
+                                    "Failed to resolve shredstream address {}, error: {e}",
+                                    endpoint.shredstream_receiver_address
+                                )
+                            })
                             .ok()
                             .and_then(|shredstream_sockets| shredstream_sockets.choose(&mut rng))
                         else {
                             return;
                         };
-                        ent.insert((shredstream_socket, *latency_us));
+                        entry.insert((shredstream_socket, *latency_us));
                     }
                 };
             });
@@ -342,14 +344,20 @@ impl BlockEngineStage {
         debug!("No reachable Block Engine found yet; retrying in {CONNECTION_BACKOFF_S}s...");
         sleep(Duration::from_secs(CONNECTION_BACKOFF_S)).await;
 
-        for (endpoint, (shredstream_socket, latency_us)) in agg_endpoints.into_iter() {
-            if endpoint != local_block_engine_config.block_engine_url {
-                debug!("Selected best Block Engine endpoint: {endpoint}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
+        // try
+        for (block_engine_url, (shredstream_socket, latency_us)) in agg_endpoints
+            .into_iter()
+            .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
+        {
+            if block_engine_url != local_block_engine_config.block_engine_url {
+                debug!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
-                backend_endpoint = Self::get_endpoint(endpoint.to_owned())?;
+                backend_endpoint = Self::get_endpoint(block_engine_url.to_owned())?;
                 shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
             }
+            let _start = Instant::now();
+            // TODO: have failure logic here
             if let Err(e) = Self::connect_auth_and_stream(
                 backend_endpoint.clone(),
                 &local_block_engine_config,
@@ -381,6 +389,10 @@ impl BlockEngineStage {
                 }
                 sleep(Self::CONNECTION_TIMEOUT).await;
             }
+            info!(
+                "Closed block engine connection to {}",
+                backend_endpoint.uri()
+            );
         }
         Ok(())
     }
