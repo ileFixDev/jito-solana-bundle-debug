@@ -183,7 +183,7 @@ impl BlockEngineStage {
                 sleep(Self::CONNECTION_BACKOFF).await;
             }
 
-            let res = Self::magic(
+            if let Err(e) = Self::connect_auth_and_stream_maybe_autoconfig(
                 &block_engine_config,
                 &cluster_info,
                 &bundle_tx,
@@ -195,8 +195,8 @@ impl BlockEngineStage {
                 &mut error_count,
                 &local_block_engine_config,
             )
-            .await;
-            if let Err(e) = res {
+            .await
+            {
                 match e {
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
@@ -215,7 +215,7 @@ impl BlockEngineStage {
         }
     }
 
-    async fn magic(
+    async fn connect_auth_and_stream_maybe_autoconfig(
         block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
@@ -228,7 +228,7 @@ impl BlockEngineStage {
         local_block_engine_config: &BlockEngineConfig,
     ) -> crate::proxy::Result<()> {
         if !local_block_engine_config.disable_block_engine_autoconfig {
-            return Self::autoconfig_connect_auth_and_stream(
+            return Self::connect_auth_and_stream_autoconfig(
                 &local_block_engine_config,
                 &block_engine_config,
                 &cluster_info,
@@ -259,7 +259,7 @@ impl BlockEngineStage {
         .await
     }
 
-    async fn autoconfig_connect_auth_and_stream(
+    async fn connect_auth_and_stream_autoconfig(
         local_block_engine_config: &BlockEngineConfig,
         global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
