@@ -314,6 +314,13 @@ impl BlockEngineStage {
                 }) else {
                     return;
                 };
+
+                // todo: only show best ping
+                datapoint_info!(
+                    "block_engine_stage-ping",
+                    "endpoint" => endpoint.block_engine_url,
+                    ("latency_us", *latency_us, i64),
+                );
                 match agg_endpoints.entry(endpoint.block_engine_url.as_str()) {
                     Entry::Occupied(mut ent) => {
                         let (_shredstream_socket, best_ping_us) = ent.get_mut();
