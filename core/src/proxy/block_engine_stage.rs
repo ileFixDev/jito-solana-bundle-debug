@@ -6,6 +6,7 @@
 
 use itertools::Itertools;
 use std::time::Instant;
+use tonic::transport::Uri;
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -286,10 +287,31 @@ impl BlockEngineStage {
 
         const PING_COUNT: usize = 3;
         let mut rng = rand::thread_rng();
+
+        let endpoints_to_ping = endpoints
+            .regioned_endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                let uri = endpoint
+                    .block_engine_url
+                    .parse::<Uri>()
+                    .inspect_err(|e| {
+                        warn!(
+                            "Failed to parse URI: {}, Error: {e}",
+                            endpoint.block_engine_url
+                        )
+                    })
+                    .ok()?;
+                if uri.host().is_none() {
+                    return None;
+                }
+                Some((endpoint, uri))
+            })
+            .collect_vec();
         let ping_res =
-            futures::future::join_all(endpoints.regioned_endpoints.iter().flat_map(|endpoint| {
+            futures::future::join_all(endpoints_to_ping.iter().flat_map(|(_endpoint, uri)| {
                 // send multiple pings to each destination to get the best time
-                std::iter::repeat_with(|| Self::ping(&endpoint.block_engine_url)).take(PING_COUNT)
+                std::iter::repeat_with(|| Self::ping(uri.host().unwrap())).take(PING_COUNT)
             }))
             .await;
 
@@ -300,18 +322,9 @@ impl BlockEngineStage {
                 u64,        /* latency us */
             ),
         > = ahash::HashMap::default();
-        ping_res
-            .iter()
-            .zip(
-                endpoints
-                    .regioned_endpoints
-                    .iter()
-                    .flat_map(|endpoint| std::iter::repeat(endpoint).take(PING_COUNT)),
-            )
-            .for_each(|(maybe_ping_res, endpoint)| {
-                let Ok(latency_us) = maybe_ping_res.as_ref().inspect_err(|e| {
-                    warn!("Failed to ping {}, error: {e}", endpoint.block_engine_url)
-                }) else {
+        ping_res.iter().zip(endpoints_to_ping.iter()).for_each(
+            |(maybe_ping_res, (endpoint, _uri))| {
+                let Ok(latency_us) = maybe_ping_res.as_ref() else {
                     return;
                 };
 
@@ -346,7 +359,8 @@ impl BlockEngineStage {
                         entry.insert((shredstream_socket, *latency_us));
                     }
                 };
-            });
+            },
+        );
 
         debug!("No reachable Block Engine found yet; retrying in {CONNECTION_BACKOFF_S}s...");
         sleep(Duration::from_secs(CONNECTION_BACKOFF_S)).await;
