@@ -102,8 +102,8 @@ enum PingError<'a> {
     #[error("Failed to send ping: {0}")]
     CommandFailure(#[from] std::io::Error),
 
-    #[error("Ping command exited with non-zero status for host: {0}")]
-    NonZeroExit(&'a str),
+    #[error("Ping command exited with non-zero status: {1:?} for host: {0}")]
+    NonZeroExit(&'a str, Option<i32>),
 
     #[error("No valid RTT found in ping output")]
     NoRttFound,
@@ -511,7 +511,7 @@ impl BlockEngineStage {
             .await?; // can produce std::io::Error -> PingError::CommandFailure
 
         if !output.status.success() {
-            return Err(PingError::NonZeroExit(host));
+            return Err(PingError::NonZeroExit(host, output.status.code()));
         }
 
         // Example line to parse: `64 bytes from 8.8.8.8: icmp_seq=1 ttl=57 time=12.3 ms`
