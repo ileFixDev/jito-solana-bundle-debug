@@ -511,6 +511,13 @@ impl BlockEngineStage {
             .await?; // can produce std::io::Error -> PingError::CommandFailure
 
         if !output.status.success() {
+            // fixme: use debug
+            warn!(
+                "Ping error to host: {host}. Stdout: {}, Stderr:{}, return code: {:?}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                output.status.code()
+            );
             return Err(PingError::NonZeroExit(host, output.status.code()));
         }
 
