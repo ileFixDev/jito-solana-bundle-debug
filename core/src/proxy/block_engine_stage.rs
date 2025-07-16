@@ -291,6 +291,7 @@ impl BlockEngineStage {
         let endpoints_to_ping = endpoints
             .regioned_endpoints
             .iter()
+            .flat_map(|endpoint| std::iter::repeat(endpoint).take(PING_COUNT)) // send multiple pings to each destination to get the best time
             .filter_map(|endpoint| {
                 let uri = endpoint
                     .block_engine_url
@@ -308,12 +309,12 @@ impl BlockEngineStage {
                 Some((endpoint, uri))
             })
             .collect_vec();
-        let ping_res =
-            futures::future::join_all(endpoints_to_ping.iter().flat_map(|(_endpoint, uri)| {
-                // send multiple pings to each destination to get the best time
-                std::iter::repeat_with(|| Self::ping(uri.host().unwrap())).take(PING_COUNT)
-            }))
-            .await;
+        let ping_res = futures::future::join_all(
+            endpoints_to_ping
+                .iter()
+                .map(|(_endpoint, uri)| Self::ping(uri.host().unwrap())),
+        )
+        .await;
 
         let mut agg_endpoints: ahash::HashMap<
             &str, /* block engine url */
