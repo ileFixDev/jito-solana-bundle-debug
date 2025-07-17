@@ -491,10 +491,17 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
+                let bundle_option = bundle.bundle;
+                if bundle_option.is_none() {
+                    info!("INFBUNDLE Bundle is None, skipping {}", bundle.uuid);
+                    return None;
+                }
+
+                info!("INFBUNDLE Received packet bundle {}", bundle.uuid);
+
                 Some(PacketBundle {
                     batch: PacketBatch::from(
-                        bundle
-                            .bundle?
+                        bundle_option?
                             .packets
                             .into_iter()
                             .map(proto_packet_to_packet)

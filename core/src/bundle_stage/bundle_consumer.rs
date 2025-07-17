@@ -254,6 +254,7 @@ impl BundleConsumer {
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
+        info!("INFBUNDLE Processing bundle: {}", locked_bundle.sanitized_bundle().bundle_id);
         if !Bank::should_bank_still_be_processing_txs(
             &bank_start.bank_creation_time,
             bank_start.working_bank.ns_per_slot,

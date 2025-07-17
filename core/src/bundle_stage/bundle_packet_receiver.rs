@@ -105,7 +105,8 @@ impl BundleReceiver {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
         let bundle_count = deserialized_bundles.len();
-        let packet_count: usize = deserialized_bundles.iter().map(|b| b.len()).sum();
+        let (packet_counts, ids) = deserialized_bundles.iter().map(|b| (b.len(), b.bundle_id().to_string())).unzip::<_, _, Vec<_>, Vec<_>>();
+        let packet_count: usize = packet_counts.iter().sum();
 
         bundle_stage_stats.increment_num_bundles_received(bundle_count as u64);
         bundle_stage_stats.increment_num_packets_received(packet_count as u64);
@@ -119,6 +120,8 @@ impl BundleReceiver {
             self.id
         );
 
+        info!("INFBUNDLE Buffer bundles {:?}", ids);
+        
         Self::push_unprocessed(
             bundle_storage,
             deserialized_bundles,
@@ -135,9 +138,17 @@ impl BundleReceiver {
     ) {
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
+            let ids = deserialized_bundles.iter().map(|b| b.bundle_id().to_string()).collect::<Vec<_>>();
             let insert_bundles_summary =
                 bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
 
+            let unprocessed_bundle_storage = bundle_storage.get_unprocessed_bundle_storage();
+            for bundle_id in ids.iter() {
+                if !unprocessed_bundle_storage.iter().any(|bundle| bundle.bundle_id() == bundle_id) {
+                    info!("INFBUNDLE dropped bundle due to capacity issue {}", bundle_id);
+                }
+            }
+            
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
             );

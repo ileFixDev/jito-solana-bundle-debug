@@ -400,6 +400,10 @@ impl BundleStage {
             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
+                let ids = bundle_storage.get_bundle_ids();
+                info!("INFBUNDLE Dropping {} bundles: {:?}", ids.len(), ids);
+                
+                let (_num_bundles_cleared, _num_cost_model_buffered_bundles) = bundle_storage.reset();
             }
         }
     }
