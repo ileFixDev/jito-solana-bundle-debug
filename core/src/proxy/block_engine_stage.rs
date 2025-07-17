@@ -489,10 +489,17 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
+                let bundle_option = bundle.bundle;
+                if bundle_option.is_none() {
+                    info!("INFBUNDLE Bundle is None, skipping {}", bundle.uuid);
+                    saturating_add_assign!(block_engine_stats.num_empty_packets, 1);
+                    return None;
+                }
+
+                info!("INFBUNDLE Received packet bundle {}", bundle.uuid);
                 Some(PacketBundle {
                     batch: PacketBatch::new(
-                        bundle
-                            .bundle?
+                        bundle_option?
                             .packets
                             .into_iter()
                             .map(proto_packet_to_packet)

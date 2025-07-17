@@ -109,7 +109,8 @@ impl BundleReceiver {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
         let bundle_count = deserialized_bundles.len();
-        let packet_count: usize = deserialized_bundles.iter().map(|b| b.len()).sum();
+        let (packet_counts, ids) = deserialized_bundles.iter().map(|b| (b.len(), b.bundle_id().to_string())).unzip::<_, _, Vec<_>, Vec<_>>();
+        let packet_count: usize = packet_counts.iter().sum();
 
         bundle_stage_stats.increment_num_bundles_received(bundle_count as u64);
         bundle_stage_stats.increment_num_packets_received(packet_count as u64);
@@ -126,6 +127,8 @@ impl BundleReceiver {
             packet_count,
             self.id
         );
+        
+        info!("INFBUNDLE Buffer bundles {:?}", ids);
 
         Self::push_unprocessed(
             unprocessed_transaction_storage,
