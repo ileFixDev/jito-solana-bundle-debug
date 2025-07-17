@@ -1181,6 +1181,13 @@ impl BundleStorage {
         (num_unprocessed_bundles, num_cost_model_buffered_bundles)
     }
 
+    pub fn get_bundle_ids(&self) -> Vec<String> {
+        self.unprocessed_bundle_storage
+            .iter()
+            .map(|b| b.bundle_id().to_string())
+            .collect()
+    }
+
     fn insert_bundles(
         deque: &mut VecDeque<ImmutableDeserializedBundle>,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
@@ -1295,13 +1302,13 @@ impl BundleStorage {
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
-                        debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
+                        info!("INFBUNDLE bundle={} executed ok", sanitized_bundle.bundle_id);
                         // yippee
                     }
                     Err(BundleExecutionError::PohRecordError(e)) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!(
-                            "bundle={} poh record error: {e:?}",
+                        info!(
+                            "INFBUNDLE Bundle {} poh record error: {e:?}",
                             sanitized_bundle.bundle_id
                         );
                         rebuffered_bundles.push(deserialized_bundle);
@@ -1309,14 +1316,14 @@ impl BundleStorage {
                     }
                     Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
+                        info!("INFBUNDLE Bundle {} bank processing done", sanitized_bundle.bundle_id);
                         rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::ExceedsCostModel) => {
                         // cost model buffered bundles contain most recent bundles at the front of the queue
-                        debug!(
-                            "bundle={} exceeds cost model, rebuffering",
+                        info!(
+                            "INFBUNDLE Bundle {} exceeds cost model, rebuffering",
                             sanitized_bundle.bundle_id
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
@@ -1326,27 +1333,27 @@ impl BundleStorage {
                     )) => {
                         // these are treated the same as exceeds cost model and are rebuferred to be completed
                         // at the beginning of the next slot
-                        debug!(
-                            "bundle={} processing time exceeded, rebuffering",
+                        info!(
+                            "INFBUNDLE Bundle {} processing time exceeded, rebuffering",
                             sanitized_bundle.bundle_id
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
-                        debug!(
-                            "bundle={} execution error: {:?}",
+                        info!(
+                            "INFBUNDLE Bundle {} execution error: {:?}",
                             sanitized_bundle.bundle_id, e
                         );
                         // do nothing
                     }
                     Err(BundleExecutionError::TipError(e)) => {
-                        debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
+                        info!("INFBUNDLE Bundle {} tip error: {}", sanitized_bundle.bundle_id, e);
                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
                         // in order to prevent buffering too many bundles, we'll just drop the bundle
                     }
                     Err(BundleExecutionError::LockError) => {
                         // lock errors are irrecoverable due to malformed transactions
-                        debug!("bundle={} lock error", sanitized_bundle.bundle_id);
+                        info!("INFBUNDLE Bundle {} lock error", sanitized_bundle.bundle_id);
                     }
                 },
             );

@@ -383,8 +383,10 @@ impl BundleStage {
             // BufferedPacketsDecision::Forward means the leader is slot is far away.
             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
             BufferedPacketsDecision::Forward => {
-                let (_num_bundles_cleared, _num_cost_model_buffered_bundles) =
-                    unprocessed_bundle_storage.bundle_storage().unwrap().reset();
+                let bundle_storage = unprocessed_bundle_storage.bundle_storage().unwrap();
+                let ids = bundle_storage.get_bundle_ids();
+                info!("INFBUNDLE Dropping {} bundles: {:?}", ids.len(), ids);
+                let (_num_bundles_cleared, _num_cost_model_buffered_bundles) = bundle_storage.reset();
 
                 // TODO (LB): add metrics here for how many bundles were cleared
 
