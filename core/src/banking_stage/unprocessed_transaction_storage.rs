@@ -1137,7 +1137,7 @@ pub struct BundleStorage {
 }
 
 impl BundleStorage {
-    pub const BUNDLE_STORAGE_CAPACITY: usize = 1000;
+    pub const BUNDLE_STORAGE_CAPACITY: usize = 10000;
     fn is_empty(&self) -> bool {
         self.unprocessed_bundle_storage.is_empty()
     }
@@ -1151,6 +1151,10 @@ impl BundleStorage {
             .iter()
             .map(|b| b.len())
             .sum::<usize>()
+    }
+    
+    pub fn get_unprocessed_bundle_storage(&self) -> &VecDeque<ImmutableDeserializedBundle> {
+        &self.unprocessed_bundle_storage
     }
 
     pub(crate) fn cost_model_buffered_bundles_len(&self) -> usize {

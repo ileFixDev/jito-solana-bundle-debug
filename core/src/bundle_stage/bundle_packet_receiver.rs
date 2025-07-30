@@ -127,7 +127,7 @@ impl BundleReceiver {
             packet_count,
             self.id
         );
-        
+
         info!("INFBUNDLE Buffer bundles {:?}", ids);
 
         Self::push_unprocessed(
@@ -145,8 +145,22 @@ impl BundleReceiver {
         bundle_stage_stats: &mut BundleStageLoopMetrics,
     ) {
         if !deserialized_bundles.is_empty() {
+            let ids = deserialized_bundles.iter().map(|b| b.bundle_id().to_string()).collect::<Vec<_>>();
             let insert_bundles_summary =
                 unprocessed_transaction_storage.insert_bundles(deserialized_bundles);
+
+            match unprocessed_transaction_storage {
+                UnprocessedTransactionStorage::VoteStorage(_) => {}
+                UnprocessedTransactionStorage::LocalTransactionStorage(_) => {}
+                UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                    let unprocessed_bundle_storage = bundle_storage.get_unprocessed_bundle_storage();
+                    for bundle_id in ids.iter() {
+                        if !unprocessed_bundle_storage.iter().any(|bundle| bundle.bundle_id() == bundle_id) {
+                            info!("INFBUNDLE dropped bundle due to capacity issue {}", bundle_id);
+                        }
+                    }
+                }
+            }
 
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
