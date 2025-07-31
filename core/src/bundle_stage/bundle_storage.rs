@@ -299,8 +299,12 @@ impl BundleStorage {
                             .increment_sanitize_transaction_result(&r);
 
                         match r {
-                            Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
+                            Ok(sanitized_bundle) => {
+                                info!("INFBUNDLE bundle {} will get processed", packet_bundle.bundle_id());
+                                Some((packet_bundle, sanitized_bundle))
+                            },
                             Err(e) => {
+                                info!("INFBUNDLE bundle {} filtered out due to {}", packet_bundle.bundle_id(), e);
                                 debug!(
                                     "bundle id: {} error sanitizing: {}",
                                     packet_bundle.bundle_id(),

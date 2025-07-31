@@ -121,7 +121,7 @@ impl BundleReceiver {
         );
 
         info!("INFBUNDLE Buffer bundles {:?}", ids);
-        
+
         Self::push_unprocessed(
             bundle_storage,
             deserialized_bundles,
@@ -144,11 +144,13 @@ impl BundleReceiver {
 
             let unprocessed_bundle_storage = bundle_storage.get_unprocessed_bundle_storage();
             for bundle_id in ids.iter() {
-                if !unprocessed_bundle_storage.iter().any(|bundle| bundle.bundle_id() == bundle_id) {
+                if unprocessed_bundle_storage.iter().any(|bundle| bundle.bundle_id() == bundle_id) {
+                    info!("INFBUNDLE packed into storage {}", bundle_id);
+                } else {
                     info!("INFBUNDLE dropped bundle due to capacity issue {}", bundle_id);
                 }
             }
-            
+
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
             );

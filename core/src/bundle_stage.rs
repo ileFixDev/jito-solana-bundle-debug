@@ -373,6 +373,9 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
+                let ids = bundle_storage.get_bundle_ids();
+                info!("INFBUNDLE Consume {} bundles: {:?}", ids.len(), ids);
+
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,
@@ -389,6 +392,9 @@ impl BundleStage {
                 let (_num_bundles_cleared, _num_cost_model_buffered_bundles) =
                     bundle_storage.reset();
 
+                let ids = bundle_storage.get_bundle_ids();
+                info!("INFBUNDLE Dropping {} bundles Forward: {:?}", ids.len(), ids);
+
                 // TODO (LB): add metrics here for how many bundles were cleared
 
                 bundle_stage_leader_metrics
@@ -401,8 +407,8 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
                 let ids = bundle_storage.get_bundle_ids();
-                info!("INFBUNDLE Dropping {} bundles: {:?}", ids.len(), ids);
-                
+                info!("INFBUNDLE Dropping {} bundles Hold: {:?}", ids.len(), ids);
+
                 let (_num_bundles_cleared, _num_cost_model_buffered_bundles) = bundle_storage.reset();
             }
         }
